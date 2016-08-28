@@ -381,6 +381,9 @@ ERROR(identifier_when_expecting_operator,PointsToFirstBadToken,
 
 WARNING(deprecated_operator_body,PointsToFirstBadToken,
         "operator should no longer be declared with body", ())
+WARNING(deprecated_operator_body_use_group,PointsToFirstBadToken,
+        "operator should no longer be declared with body; "
+        "use a precedence group instead", ())
 ERROR(operator_decl_no_fixity,none,
       "operator must be declared as 'prefix', 'postfix', or 'infix'", ())
 
@@ -742,6 +745,9 @@ ERROR(parameter_unnamed,none,
 
 ERROR(parameter_curry_syntax_removed,none,
       "curried function declaration syntax has been removed; use a single parameter list", ())
+
+ERROR(initializer_as_typed_pattern,none,
+      "unexpected initializer in pattern; did you mean to use '='?", ())
 
 //------------------------------------------------------------------------------
 // Statement parsing diagnostics
@@ -1106,8 +1112,6 @@ ERROR(expr_selector_expected_rparen,PointsToFirstBadToken,
       "expected ')' to complete '#selector' expression", ())
 
 // Type-of expressions.
-ERROR(expr_typeof_expected_lparen,PointsToFirstBadToken,
-      "expected '(' following 'type'", ())
 ERROR(expr_typeof_expected_label_of,PointsToFirstBadToken,
       "expected argument label 'of:' within 'type(...)'", ())
 ERROR(expr_typeof_expected_expr,PointsToFirstBadToken,
@@ -1215,6 +1219,12 @@ ERROR(attr_noescape_conflicts_escaping_autoclosure,none,
 ERROR(attr_noescape_implied_by_autoclosure,none,
       "@noescape is implied by @autoclosure and should not be "
       "redundantly specified", ())
+WARNING(attr_autoclosure_escaping_deprecated,none,
+        "@autoclosure(escaping) is deprecated; use @autoclosure @escaping instead",
+        ())
+WARNING(attr_noescape_deprecated,none,
+        "@noescape is the default and is deprecated",
+        ())
 
 // convention
 ERROR(convention_attribute_expected_lparen,none,
@@ -1251,16 +1261,6 @@ ERROR(effects_attribute_expect_option,none,
       "expected '%0' option (readnone, readonly, readwrite)", (StringRef))
 ERROR(effects_attribute_unknown_option,none,
       "unknown option '%0' for attribute '%1'", (StringRef, StringRef))
-
-// swift3_migration
-ERROR(attr_swift3_migration_label,none,
-      "expected 'renamed' or 'message' in 'swift3_migration' attribute", ())
-WARNING(warn_attr_swift3_migration_unknown_label,none,
-        "expected 'renamed' or 'message' in 'swift3_migration' attribute", ())
-ERROR(attr_swift3_migration_expected_rparen,none,
-      "expected ')' after name for 'swift3_migration' attribute", ())
-ERROR(attr_bad_swift_name,none,
-      "ill-formed Swift name '%0'", (StringRef))
 
 // unowned
 ERROR(attr_unowned_invalid_specifier,none,

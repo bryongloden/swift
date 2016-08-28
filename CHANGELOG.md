@@ -2,6 +2,99 @@ Note: This is in reverse chronological order, so newer entries are added to the 
 
 Swift 3.0
 ---------
+
+* [SE-0045](https://github.com/apple/swift-evolution/blob/master/proposals/0045-scan-takewhile-dropwhile.md)
+
+  The `Sequence` protocol now includes two new members, `prefix(while:)` and
+  `drop(while:)`.  `prefix(while:)` is used to request the longest subsequence
+  satisfying a predicate.  `drop(while:)` is used to request the subsequence
+  remaining after dropping the longest subsequence satisfying a predicate.
+
+* [SE-0136](https://github.com/apple/swift-evolution/blob/master/proposals/0136-memory-layout-of-values.md) and [SE-0101](https://github.com/apple/swift-evolution/blob/master/proposals/0101-standardizing-sizeof-naming.md)
+
+  The functions `sizeof()`, `strideof()`, and `alignof()` have been removed.
+  Instead, these memory layout properties for a type `T` are now spelled
+  `MemoryLayout<T>.size`, `MemoryLayout<T>.stride`, and
+  `MemoryLayout<T>.alignment`, respectively.
+
+  The functions `sizeofValue()`, `strideofValue()`, and `alignofValue()` have
+  been renamed `MemoryLayout.size(ofValue:)`, `MemoryLayout.stride(ofValue:)`,
+  and `MemoryLayout.alignment(ofValue:)`.
+
+* [SE-125](https://github.com/apple/swift-evolution/blob/master/proposals/0125-remove-nonobjectivecbase.md)
+
+  The functions `isUniquelyReferenced()` and `isUniquelyReferencedNonObjC()`
+  have been removed. The function `isKnownUniquelyReferenced()` should be called
+  instead. The class `NonObjectiveCBase` which classes using
+  `isUniquelyReferenced()` needed to inherit from was removed.
+
+  The method `ManagedBufferPointer.holdsUniqueReference` was renamed to
+  `ManagedBufferPointer.isUniqueReference`.
+
+  ```swift
+  // old
+  class SwiftKlazz : NonObjectiveCBase {}
+  expectTrue(isUniquelyReferenced(SwiftKlazz()))
+
+  var managedPtr : ManagedBufferPointer = ...
+  if !managedPtr.holdsUniqueReference() {
+    print("not unique")
+  }
+
+
+  // new
+  class SwiftKlazz {}
+  expectTrue(isKnownUniquelyReferenced(SwiftKlazz()))
+
+  var managedPtr : ManagedBufferPointer = ...
+  if !managedPtr.isUniqueReference() {
+    print("not unique")
+  }
+
+  ```
+
+* [SE-124](https://github.com/apple/swift-evolution/blob/master/proposals/0124-bitpattern-label-for-int-initializer-objectidentfier.md)
+
+  The initializers on `Int` and `UInt` accepting an `ObjectIdentifier` now need
+  to be spelled with an explicit `bitPattern` label.
+
+  ```swift
+  let x: ObjectIdentifier = ...
+
+  // old
+  let u = UInt(x)
+  let i = Int(x)
+
+  // new
+  let u = UInt(bitPattern: x)
+  let i = Int(bitPattern: x)
+  ```
+
+* [SE-120](https://github.com/apple/swift-evolution/blob/master/proposals/0120-revise-partition-method.md)
+
+  The collection methods `partition()` and `partition(isOrderedBefore:)` have
+  been removed from Swift. They were replaced by the method `partition(by:)`
+  which takes an unary predicate.
+
+  Calls to the `partition()` method can be replaced by the following code.
+
+  ```swift
+  // old
+  let p = c.partition()
+
+  // new
+  let p = c.first.flatMap({ first in
+      c.partition(by: { $0 >= first })
+  }) ?? c.startIndex
+  ```
+
+* [SE-103](https://github.com/apple/swift-evolution/blob/master/proposals/0103-make-noescape-default.md)
+
+  Closure parameters are non-escaping by default, rather than explicitly being
+  annotated `@noescape`. Use `@escaping` to say that a closure parameter may
+  escape. `@autoclosure(escaping)` is now spelled `@autoclosure @escaping`.
+  `@noescape` and `@autoclosure(escaping)` are deprecated.
+
 * [SE-0115](https://github.com/apple/swift-evolution/blob/master/proposals/0115-literal-syntax-protocols.md)
 
   To clarify the role of `*LiteralConvertible` protocols, they have 
@@ -145,6 +238,33 @@ Swift 3.0
 * [SR-2131](https://bugs.swift.org/browse/SR-2131):
   The `hasPrefix` and `hasSuffix` functions now consider the empty string to be a
   prefix and suffix of all strings.
+
+* [SE-0128](https://github.com/apple/swift-evolution/blob/master/proposals/0128-unicodescalar-failable-initializer.md)
+
+  Some UnicodeScalar initializers (ones that are non-failable) now return an Optional, 
+  i.e., in case a UnicodeScalar can not be constructed, nil is returned.
+
+  ```swift
+  // Old
+  var string = ""
+  let codepoint: UInt32 = 55357 // this is invalid
+  let ucode = UnicodeScalar(codepoint) // Program crashes at this point.
+  string.append(ucode)
+  ``` 
+
+  After marking the initializer as failable, users can write code like this and the
+  program will execute fine even if the codepoint isn't valid.
+
+  ```swift
+  // New 
+  var string = ""
+  let codepoint: UInt32 = 55357 // this is invalid
+  if let ucode = UnicodeScalar(codepoint) {
+    string.append(ucode)
+  } else {
+    // do something else
+  }
+  ``` 
 
 * [SE-0095](https://github.com/apple/swift-evolution/blob/master/proposals/0095-any-as-existential.md):
   The `protocol<...>` composition construct has been removed. In its

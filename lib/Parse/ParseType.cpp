@@ -450,7 +450,7 @@ ParserResult<TypeRepr> Parser::parseTypeIdentifierOrTypeComposition() {
       // Skip until we hit the '>'.
       RAngleLoc = skipUntilGreaterInTypeList(/*protocolComposition=*/true);
     }
-    
+
     auto composition = ProtocolCompositionTypeRepr::create(
       Context, Protocols, ProtocolLoc, {LAngleLoc, RAngleLoc});
 
@@ -468,6 +468,16 @@ ParserResult<TypeRepr> Parser::parseTypeIdentifierOrTypeComposition() {
       while(++Begin != Protocols.end()) {
         replacement += " & ";
         replacement += extractText(*Begin);
+      }
+
+      // Copy trailing content after '>' to the replacement string.
+      // FIXME: lexer should smartly separate '>' and trailing contents like '?'.
+      StringRef TrailingContent = L->getTokenAt(RAngleLoc).getRange().str().
+        substr(1);
+      if (!TrailingContent.empty()) {
+        replacement.insert(replacement.begin(), '(');
+        replacement += ")";
+        replacement += TrailingContent;
       }
 
       // Replace 'protocol<T1, T2>' with 'T1 & T2'
@@ -710,6 +720,12 @@ ParserResult<TupleTypeRepr> Parser::parseTypeTupleBody() {
           diag.fixItRemoveChars(firstNameLoc, ElementsR[i]->getStartLoc());
         else
           diag.fixItReplace(SourceRange(firstNameLoc), "_");
+      }
+
+      if (firstNameLoc.isValid() || secondNameLoc.isValid()) {
+        // Form the named parameter type representation.
+        ElementsR[i] = new (Context) NamedTypeRepr(secondName, ElementsR[i],
+                                                   secondNameLoc, firstNameLoc);
       }
     }
   }

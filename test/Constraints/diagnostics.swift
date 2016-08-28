@@ -21,7 +21,7 @@ func f0(_ x: Int,
 
 func f1(_: @escaping (Int, Float) -> Int) { }
 
-func f2(_: (_: @escaping (Int) -> Int)) -> Int {}
+func f2(_: (_: (Int) -> Int)) -> Int {}
 
 func f3(_: @escaping (_: @escaping (Int) -> Float) -> Int) {}
 
@@ -146,7 +146,7 @@ public func myMap<C : Collection, T>(
 }
 
 @available(*, unavailable, message: "call the 'map()' method on the optional value")
-public func myMap<T, U>(_ x: T?, _ f: @noescape (T) -> U) -> U? {
+public func myMap<T, U>(_ x: T?, _ f: (T) -> U) -> U? {
   fatalError("unavailable function can't be called")
 }
 
@@ -163,7 +163,7 @@ func rdar20142523() {
 // <rdar://problem/21080030> Bad diagnostic for invalid method call in boolean expression: (_, ExpressibleByIntegerLiteral)' is not convertible to 'ExpressibleByIntegerLiteral
 func rdar21080030() {
   var s = "Hello"
-  if s.characters.count() == 0 {} // expected-error{{cannot call value of non-function type 'IndexDistance'}}{{24-26=}}
+  if s.characters.count() == 0 {} // expected-error{{cannot call value of non-function type 'String.CharacterView.IndexDistance'}}{{24-26=}}
 }
 
 // <rdar://problem/21248136> QoI: problem with return type inference mis-diagnosed as invalid arguments
@@ -412,7 +412,7 @@ CurriedClass.m2(12)  // expected-error {{use of instance member 'm2' on type 'Cu
 
 // <rdar://problem/20491794> Error message does not tell me what the problem is
 enum Color {
-  case Red // expected-note 2 {{did you mean 'Red'?}}
+  case Red
   case Unknown(description: String)
 
   static func rainbow() -> Color {}
@@ -446,8 +446,8 @@ let _: Color = .frob(1, i)  // expected-error {{passing value of type 'Int' to a
 let _: Color = .frob(1, b: i)  // expected-error {{passing value of type 'Int' to an inout parameter requires explicit '&'}}
 let _: Color = .frob(1, &d) // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
 let _: Color = .frob(1, b: &d) // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-var someColor : Color = .red // expected-error {{type 'Color' has no member 'red'}}
-someColor = .red  // expected-error {{type 'Color' has no member 'red'}}
+var someColor : Color = .red // expected-error {{enum type 'Color' has no case 'red'; did you mean 'Red'}}
+someColor = .red  // expected-error {{enum type 'Color' has no case 'red'; did you mean 'Red'}}
 
 func testTypeSugar(_ a : Int) {
   typealias Stride = Int
@@ -769,3 +769,14 @@ struct SR1752 {
 let sr1752: SR1752? = nil
 
 true ? nil : sr1752?.foo() // don't generate a warning about unused result since foo returns Void
+
+// <rdar://problem/27891805> QoI: FailureDiagnosis doesn't look through 'try'
+struct rdar27891805 {
+  init(contentsOf: String, encoding: String) throws {}
+  init(contentsOf: String, usedEncoding: inout String) throws {}
+  init<T>(_ t: T) {}
+}
+
+try rdar27891805(contentsOfURL: nil, usedEncoding: nil)
+// expected-error@-1 {{argument labels '(contentsOfURL:, usedEncoding:)' do not match any available overloads}}
+// expected-note@-2 {{overloads for 'rdar27891805' exist with these partially matching parameter lists: (contentsOf: String, encoding: String), (contentsOf: String, usedEncoding: inout String)}}

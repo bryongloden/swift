@@ -598,6 +598,13 @@ private:
     if (Info.ID == diag::objc_witness_selector_mismatch.ID ||
         Info.ID == diag::witness_non_objc.ID)
       return false;
+    // This interacts badly with the migrator. For such code:
+    //   func test(p: Int, _: String) {}
+    //   test(0, "")
+    // the compiler bizarrely suggests to change order of arguments in the call
+    // site.
+    if (Info.ID == diag::argument_out_of_order_unnamed_unnamed.ID)
+      return false;
     // The following interact badly with the swift migrator by removing @IB*
     // attributes when there is some unrelated type issue.
     if (Info.ID == diag::invalid_iboutlet.ID ||
@@ -612,6 +619,10 @@ private:
     // Adding type(of:) interacts poorly with the swift migrator by
     // invalidating some inits with type errors.
     if (Info.ID == diag::init_not_instance_member.ID)
+      return false;
+    // Renaming enum cases interacts poorly with the swift migrator by
+    // reverting changes made by the mgirator.
+    if (Info.ID == diag::could_not_find_enum_case.ID)
       return false;
 
     if (Kind == DiagnosticKind::Error)
@@ -629,8 +640,17 @@ private:
         Info.ID == diag::noescape_autoclosure.ID ||
         Info.ID == diag::where_inside_brackets.ID ||
         Info.ID == diag::selector_construction_suggest.ID ||
-        Info.ID == diag::selector_literal_deprecated_suggest.ID)
+        Info.ID == diag::selector_literal_deprecated_suggest.ID ||
+        Info.ID == diag::attr_noescape_deprecated.ID ||
+        Info.ID == diag::attr_autoclosure_escaping_deprecated.ID ||
+        Info.ID == diag::attr_warn_unused_result_removed.ID ||
+        Info.ID == diag::any_as_anyobject_fixit.ID ||
+        Info.ID == diag::deprecated_protocol_composition.ID ||
+        Info.ID == diag::deprecated_protocol_composition_single.ID ||
+        Info.ID == diag::deprecated_any_composition.ID ||
+        Info.ID == diag::deprecated_operator_body.ID)
       return true;
+
     return false;
   }
 

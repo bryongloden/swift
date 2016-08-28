@@ -81,13 +81,8 @@ enum class CheckedCastKind : unsigned {
   ArrayDowncast,
   // A downcast from a dictionary type to another dictionary type.
   DictionaryDowncast,
-  // A downcast from a dictionary type to another dictionary type that
-  // requires bridging.
-  DictionaryDowncastBridged,
   // A downcast from a set type to another set type.
   SetDowncast,
-  // A downcast from a set type to another set type that requires bridging.
-  SetDowncastBridged,
   /// A downcast from an object of class or Objective-C existential
   /// type to its bridged value type.
   BridgeFromObjectiveC,
@@ -392,9 +387,8 @@ class alignas(8) Expr {
   class CollectionUpcastConversionExprBitfields {
     friend class CollectionUpcastConversionExpr;
     unsigned : NumExprBits;
-    unsigned BridgesToObjC : 1;
   };
-  enum { NumCollectionUpcastConversionExprBits = NumExprBits + 1 };
+  enum { NumCollectionUpcastConversionExprBits = NumExprBits + 0 };
   static_assert(NumCollectionUpcastConversionExprBits <= 32, "fits in an unsigned");
 
   class ObjCSelectorExprBitfields {
@@ -989,6 +983,7 @@ public:
 /// "[\(min)..\(max)]"
 /// \endcode
 class InterpolatedStringLiteralExpr : public LiteralExpr {
+  /// Points at the beginning quote.
   SourceLoc Loc;
   MutableArrayRef<Expr *> Segments;
   Expr *SemanticExpr;
@@ -1007,10 +1002,12 @@ public:
   void setSemanticExpr(Expr *SE) { SemanticExpr = SE; }
   
   SourceLoc getStartLoc() const {
-    return Segments.front()->getStartLoc();
+    return Loc;
   }
   SourceLoc getEndLoc() const {
-    return Segments.back()->getEndLoc();
+    // SourceLocs are token based, and the interpolated string is one string
+    // token, so the range should be (Start == End).
+    return Loc;
   }
   
   static bool classof(const Expr *E) {
@@ -1418,7 +1415,11 @@ protected:
 
 public:
   ArrayRef<ValueDecl*> getDecls() const { return Decls; }
-  
+
+  void setDecls(ArrayRef<ValueDecl *> domain) {
+    Decls = domain;
+  }
+
   /// getBaseType - Determine the type of the base object provided for the
   /// given overload set, which is only non-null when dealing with an overloaded
   /// member reference.
@@ -2935,19 +2936,12 @@ private:
 public:
   CollectionUpcastConversionExpr(Expr *subExpr, Type type,
                                  ConversionPair keyConversion,
-                                 ConversionPair valueConversion,
-                                 bool bridgesToObjC)
+                                 ConversionPair valueConversion)
     : ImplicitConversionExpr(
         ExprKind::CollectionUpcastConversion, subExpr, type),
       KeyConversion(keyConversion), ValueConversion(valueConversion) {
     assert((!KeyConversion || ValueConversion)
            && "key conversion without value conversion");
-    CollectionUpcastConversionExprBits.BridgesToObjC = bridgesToObjC;
-  }
-
-  /// Whether this upcast bridges the source elements to Objective-C.
-  bool bridgesToObjC() const {
-    return CollectionUpcastConversionExprBits.BridgesToObjC;
   }
 
   /// Returns the expression that should be used to perform a
@@ -3017,12 +3011,36 @@ public:
   ArrayRef<ProtocolConformanceRef> getConformances() const {
     return Conformances;
   }
-  
+
   static bool classof(const Expr *E) {
     return E->getKind() == ExprKind::Erasure;
   }
 };
 
+/// AnyHashableErasureExpr - Perform type erasure by converting a value
+/// to AnyHashable type.
+///
+/// The type of the sub-expression should always be a type that implements
+/// the Hashable protocol.
+class AnyHashableErasureExpr : public ImplicitConversionExpr {
+  ProtocolConformanceRef Conformance;
+
+public:
+  AnyHashableErasureExpr(Expr *subExpr, Type type,
+                         ProtocolConformanceRef conformance)
+    : ImplicitConversionExpr(ExprKind::AnyHashableErasure, subExpr, type),
+      Conformance(conformance) {}
+
+  /// \brief Retrieve the mapping specifying how the type of the
+  /// subexpression conforms to the Hashable protocol.
+  ProtocolConformanceRef getConformance() const {
+    return Conformance;
+  }
+  
+  static bool classof(const Expr *E) {
+    return E->getKind() == ExprKind::AnyHashableErasure;
+  }
+};
 /// UnresolvedSpecializeExpr - Represents an explicit specialization using
 /// a type parameter list (e.g. "Vector<Int>") that has not been resolved.
 class UnresolvedSpecializeExpr : public Expr {

@@ -299,8 +299,12 @@ public struct _StringCore {
     // Always dereference two bytes, but when elements are 8 bits we
     // multiply the high byte by 0.
     // FIXME(performance): use masking instead of multiplication.
+#if _endian(little)
     return UTF16.CodeUnit(p.pointee)
       + UTF16.CodeUnit((p + 1).pointee) * _highByteMultiplier
+#else
+    return _highByteMultiplier == 0 ? UTF16.CodeUnit(p.pointee) : UTF16.CodeUnit((p + 1).pointee) + UTF16.CodeUnit(p.pointee) * _highByteMultiplier
+#endif
   }
 
   /// Get the Nth UTF-16 Code Unit stored.
@@ -329,7 +333,7 @@ public struct _StringCore {
   /// Write the string, in the given encoding, to output.
   func encode<Encoding: UnicodeCodec>(
     _ encoding: Encoding.Type,
-    into processCodeUnit: @noescape (Encoding.CodeUnit) -> Void)
+    into processCodeUnit: (Encoding.CodeUnit) -> Void)
   {
     if _fastPath(_baseAddress != nil) {
       if _fastPath(elementWidth == 1) {
@@ -549,7 +553,7 @@ public struct _StringCore {
   /// Returns `true` iff the contents of this string can be
   /// represented as pure ASCII.
   ///
-  /// - Complexity: O(N) in the worst case.
+  /// - Complexity: O(*n*) in the worst case.
   func isRepresentableAsASCII() -> Bool {
     if _slowPath(!hasContiguousStorage) {
       return false
@@ -585,7 +589,7 @@ extension _StringCore : RangeReplaceableCollection {
   /// Replace the elements within `bounds` with `newElements`.
   ///
   /// - Complexity: O(`bounds.count`) if `bounds.upperBound
-  ///   == self.endIndex` and `newElements.isEmpty`, O(N) otherwise.
+  ///   == self.endIndex` and `newElements.isEmpty`, O(*n*) otherwise.
   public mutating func replaceSubrange<C>(
     _ bounds: Range<Int>,
     with newElements: C

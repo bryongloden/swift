@@ -663,7 +663,7 @@ isNonmutatingCapture(SILArgument *BoxArg) {
 static bool
 isNonescapingUse(Operand *O, SmallVectorImpl<SILInstruction*> &Mutations) {
   auto *U = O->getUser();
-  if (U->isOpenedArchetypeOperand(*O))
+  if (U->isTypeDependentOperand(*O))
     return true;
   // Marking the boxed value as escaping is OK. It's just a DI annotation.
   if (isa<MarkFunctionEscapeInst>(U))
@@ -862,6 +862,7 @@ constructClonedFunction(PartialApplyInst *PAI, FunctionRefInst *FRI,
   // Create the substitution maps.
   TypeSubstitutionMap InterfaceSubs;
   TypeSubstitutionMap ContextSubs;
+  ArchetypeConformanceMap ConformanceMap;
 
   ArrayRef<Substitution> ApplySubs = PAI->getSubstitutions();
   auto genericSig = F->getLoweredFunctionType()->getGenericSignature();
@@ -869,7 +870,9 @@ constructClonedFunction(PartialApplyInst *PAI, FunctionRefInst *FRI,
 
   if (!ApplySubs.empty()) {
     InterfaceSubs = genericSig->getSubstitutionMap(ApplySubs);
-    ContextSubs = genericParams->getSubstitutionMap(ApplySubs);
+    genericParams->getSubstitutionMap(F->getModule().getSwiftModule(),
+                                      genericSig, ApplySubs,
+                                      ContextSubs, ConformanceMap);
   } else {
     assert(!genericSig && "Function type has Unexpected generic signature!");
     assert(!genericParams &&

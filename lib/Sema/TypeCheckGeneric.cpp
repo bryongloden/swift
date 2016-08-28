@@ -271,10 +271,8 @@ bool TypeChecker::checkGenericParamList(ArchetypeBuilder *builder,
   for (auto param : *genericParams) {
     param->setDepth(depth);
 
-    if (builder) {
-      if (builder->addGenericParameter(param))
-        invalid = true;
-    }
+    if (builder)
+      builder->addGenericParameter(param);
   }
 
   // Now, check the inheritance clauses of each parameter.
@@ -815,7 +813,8 @@ void TypeChecker::finalizeGenericParamList(ArchetypeBuilder &builder,
 
 #ifndef NDEBUG
   // Record archetype contexts.
-  for (auto archetype : genericParams->getAllArchetypes()) {
+  for (auto *param : genericParams->getParams()) {
+    auto *archetype = param->getArchetype();
     if (Context.ArchetypeContexts.count(archetype) == 0)
       Context.ArchetypeContexts[archetype] = dc;
   }

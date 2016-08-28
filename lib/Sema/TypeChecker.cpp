@@ -243,13 +243,13 @@ Type TypeChecker::lookupBoolType(const DeclContext *dc) {
       getStdlibModule(dc)->lookupValue({}, Context.getIdentifier("Bool"),
                                        NLKind::QualifiedLookup, results);
       if (results.size() != 1) {
-        diagnose(SourceLoc(), diag::bool_type_broken);
+        diagnose(SourceLoc(), diag::broken_bool);
         return Type();
       }
 
       auto tyDecl = dyn_cast<TypeDecl>(results.front());
       if (!tyDecl) {
-        diagnose(SourceLoc(), diag::bool_type_broken);
+        diagnose(SourceLoc(), diag::broken_bool);
         return Type();
       }
 
@@ -674,12 +674,25 @@ void swift::performWholeModuleTypeChecking(SourceFile &SF) {
 }
 
 bool swift::performTypeLocChecking(ASTContext &Ctx, TypeLoc &T,
-                                   bool isSILType, DeclContext *DC,
+                                   DeclContext *DC,
+                                   bool ProduceDiagnostics) {
+  return performTypeLocChecking(Ctx, T,
+                                /*isSILMode=*/false,
+                                /*isSILType=*/false,
+                                DC, ProduceDiagnostics);
+}
+
+bool swift::performTypeLocChecking(ASTContext &Ctx, TypeLoc &T,
+                                   bool isSILMode,
+                                   bool isSILType,
+                                   DeclContext *DC,
                                    bool ProduceDiagnostics) {
   TypeResolutionOptions options;
 
   // Fine to have unbound generic types.
   options |= TR_AllowUnboundGenerics;
+  if (isSILMode)
+    options |= TR_SILMode;
   if (isSILType)
     options |= TR_SILType;
 

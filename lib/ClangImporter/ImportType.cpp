@@ -331,7 +331,7 @@ namespace {
         pointeeType = Impl.importType(pointeeQualType,
                                       ImportTypeKind::Pointee,
                                       AllowNSUIntegerAsInt,
-                                      /*can fully bridge*/false);
+                                      /*isFullyBridgeable*/false);
 
       // If the pointed-to type is unrepresentable in Swift, import as
       // OpaquePointer.
@@ -418,7 +418,7 @@ namespace {
       Type elementType = Impl.importType(type->getElementType(),
                                          ImportTypeKind::Pointee,
                                          AllowNSUIntegerAsInt,
-                                         /*can fully bridge*/false);
+                                         /*isFullyBridgeable*/false);
       if (!elementType)
         return Type();
       
@@ -985,11 +985,9 @@ namespace {
 
       // id maps to Any in bridgeable contexts, AnyObject otherwise.
       if (type->isObjCIdType()) {
-        if (Impl.SwiftContext.LangOpts.EnableIdAsAny)
-          return {proto->getDeclaredType(),
-                  ImportHint(ImportHint::ObjCBridged,
-                             Impl.SwiftContext.TheAnyType)};
-        return {proto->getDeclaredType(), ImportHint::ObjCPointer};
+        return {proto->getDeclaredType(),
+                ImportHint(ImportHint::ObjCBridged,
+                           Impl.SwiftContext.TheAnyType)};
       }
 
       // Class maps to AnyObject.Type.
@@ -2272,7 +2270,14 @@ Type ClangImporter::Implementation::importMethodType(
                                OptionalityOfReturn);
     // Adjust the result type for a throwing function.
     if (swiftResultTy && errorInfo) {
-      origSwiftResultTy = swiftResultTy->getCanonicalType();
+
+      // Get the original unbridged result type.
+      origSwiftResultTy = importType(resultType, resultKind,
+                                 allowNSUIntegerAsIntInResult,
+                                 /*isFullyBridgeable*/false,
+                                 OptionalityOfReturn)
+                              ->getCanonicalType();
+
       swiftResultTy = adjustResultTypeForThrowingFunction(*errorInfo,
                                                           swiftResultTy);
     }
@@ -2709,10 +2714,3 @@ Type ClangImporter::Implementation::getNSCopyingType() {
 Type ClangImporter::Implementation::getNSObjectProtocolType() {
   return getNamedProtocolType(*this, "NSObject");
 }
-
-Type ClangImporter::Implementation::getCFStringRefType() {
-  if (auto decl = dyn_cast_or_null<TypeDecl>(importDeclByName("CFStringRef")))
-    return decl->getDeclaredType();
-  return Type();
-}
-

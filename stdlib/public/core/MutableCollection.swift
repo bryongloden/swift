@@ -15,9 +15,11 @@
 /// In most cases, it's best to ignore this protocol and use the
 /// `MutableCollection` protocol instead, because it has a more complete
 /// interface.
+@available(*, deprecated, message: "it will be removed in Swift 4.0.  Please use 'MutableCollection' instead")
 public protocol MutableIndexable : Indexable {
   // FIXME(ABI)(compiler limitation): there is no reason for this protocol
   // to exist apart from missing compiler features that we emulate with it.
+  // rdar://problem/20531108
   //
   // This protocol is almost an implementation detail of the standard
   // library; it is used to deduce things like the `SubSequence` and
@@ -302,9 +304,9 @@ public protocol MutableCollection : MutableIndexable, Collection {
   ///   collection match `belongsInSecondPartition`, the returned index is
   ///   equal to the collection's `endIndex`.
   ///
-  /// - Complexity: O(n)
+  /// - Complexity: O(*n*)
   mutating func partition(
-    by belongsInSecondPartition: @noescape (Iterator.Element) throws -> Bool
+    by belongsInSecondPartition: (Iterator.Element) throws -> Bool
   ) rethrows -> Index
   
   /// Call `body(p)`, where `p` is a pointer to the collection's
@@ -318,7 +320,7 @@ public protocol MutableCollection : MutableIndexable, Collection {
   /// same algorithm on `body`\ 's argument lets you trade safety for
   /// speed.
   mutating func _withUnsafeMutableBufferPointerIfSupported<R>(
-    _ body: @noescape (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
+    _ body: (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
   ) rethrows -> R?
   // FIXME(ABI)(compiler limitation): the signature should use
   // UnsafeMutableBufferPointer, but the compiler can't handle that.
@@ -331,7 +333,7 @@ public protocol MutableCollection : MutableIndexable, Collection {
 // TODO: swift-3-indexing-model - review the following
 extension MutableCollection {
   public mutating func _withUnsafeMutableBufferPointerIfSupported<R>(
-    _ body: @noescape (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
+    _ body: (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
   ) rethrows -> R? {
     return nil
   }

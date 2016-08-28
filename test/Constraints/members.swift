@@ -120,9 +120,9 @@ var wcurried1 = w.curried
 var wcurried2 = w.curried(0)
 var wcurriedFull : () = w.curried(0)(1)
 
-// Member of enum Type
+// Member of enum type
 func enumMetatypeMember(_ opt: Int?) {
-  opt.none // expected-error{{static member 'none' cannot be used on instance of type 'Int?'}}
+  opt.none // expected-error{{enum element 'none' cannot be referenced as an instance member}}
 }
 
 ////
@@ -181,6 +181,16 @@ extension P {
 
 protocol ClassP : class {
   func bas(_ x: Int)
+  func quux(_ x: Int)
+}
+
+class ClassC : ClassP {
+  func bas(_ x: Int) {}
+}
+
+extension ClassP {
+  func quux(_ x: Int) {}
+  func bing(_ x: Int) {}
 }
 
 func generic<T: P>(_ t: T) {
@@ -241,6 +251,14 @@ func genericClassP<T: ClassP>(_ t: T) {
   let _: (T) -> (Int) -> () = id(T.bas)
   let _: (Int) -> () = id(T.bas(t))
   let _: () = id(T.bas(t)(1))
+}
+
+func genericClassC<C : ClassC>(_ c: C) {
+  // Make sure that we can find members of protocol extensions
+  // on a class-bound archetype
+  let _ = c.bas(123)
+  let _ = c.quux(123)
+  let _ = c.bing(123)
 }
 
 ////
@@ -310,6 +328,10 @@ protocol StaticP {
 extension StaticP {
   func bar() {
     _ = StaticP.foo(a:) // expected-error{{static member 'foo(a:)' cannot be used on protocol metatype 'StaticP.Protocol'}} {{9-16=Self}}
+
+    func nested() {
+      _ = StaticP.foo(a:) // expected-error{{static member 'foo(a:)' cannot be used on protocol metatype 'StaticP.Protocol'}} {{11-18=Self}}
+    }
   }
 }
 

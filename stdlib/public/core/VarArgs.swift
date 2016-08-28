@@ -65,7 +65,7 @@ let _x86_64RegisterSaveWords = _x86_64CountGPRegisters + _x86_64CountSSERegister
 
 /// Invoke `body` with a C `va_list` argument derived from `args`.
 public func withVaList<R>(_ args: [CVarArg],
-  _ body: @noescape (CVaListPointer) -> R) -> R {
+  _ body: (CVaListPointer) -> R) -> R {
   let builder = _VaListBuilder()
   for a in args {
     builder.append(a)
@@ -76,7 +76,7 @@ public func withVaList<R>(_ args: [CVarArg],
 /// Invoke `body` with a C `va_list` argument derived from `builder`.
 internal func _withVaList<R>(
   _ builder: _VaListBuilder,
-  _ body: @noescape (CVaListPointer) -> R
+  _ body: (CVaListPointer) -> R
 ) -> R {
   let result = body(builder.va_list())
   _fixLifetime(builder)
@@ -94,7 +94,7 @@ internal func _withVaList<R>(
 /// - Warning: This function is best avoided in favor of
 ///   `withVaList`, but occasionally (i.e. in a `class` initializer) you
 ///   may find that the language rules don't allow you to use
-/// `withVaList` as intended.
+///   `withVaList` as intended.
 public func getVaList(_ args: [CVarArg]) -> CVaListPointer {
   let builder = _VaListBuilder()
   for a in args {
@@ -107,7 +107,7 @@ public func getVaList(_ args: [CVarArg]) -> CVaListPointer {
 }
 #endif
 
-public func _encodeBitsAsWords<T : CVarArg>(_ x: T) -> [Int] {
+public func _encodeBitsAsWords<T>(_ x: T) -> [Int] {
   let result = [Int](
     repeating: 0,
     count: (MemoryLayout<T>.size + MemoryLayout<Int>.size - 1) / MemoryLayout<Int>.size)
@@ -144,7 +144,7 @@ extension Int64 : CVarArg, _CVarArgAligned {
   /// the value returned by `_cVarArgEncoding`.
   public var _cVarArgAlignment: Int {
     // FIXME: alignof differs from the ABI alignment on some architectures
-    return MemoryLayout._ofInstance(self).alignment
+    return MemoryLayout.alignment(ofValue: self)
   }
 }
 
@@ -192,7 +192,7 @@ extension UInt64 : CVarArg, _CVarArgAligned {
   /// the value returned by `_cVarArgEncoding`.
   public var _cVarArgAlignment: Int {
     // FIXME: alignof differs from the ABI alignment on some architectures
-    return MemoryLayout._ofInstance(self).alignment
+    return MemoryLayout.alignment(ofValue: self)
   }
 }
 
@@ -265,7 +265,7 @@ extension Float : _CVarArgPassedAsDouble, _CVarArgAligned {
   /// the value returned by `_cVarArgEncoding`.
   public var _cVarArgAlignment: Int {
     // FIXME: alignof differs from the ABI alignment on some architectures
-    return MemoryLayout._ofInstance(Double(self)).alignment
+    return MemoryLayout.alignment(ofValue: Double(self))
   }
 }
 
@@ -280,7 +280,7 @@ extension Double : _CVarArgPassedAsDouble, _CVarArgAligned {
   /// the value returned by `_cVarArgEncoding`.
   public var _cVarArgAlignment: Int {
     // FIXME: alignof differs from the ABI alignment on some architectures
-    return MemoryLayout._ofInstance(self).alignment
+    return MemoryLayout.alignment(ofValue: self)
   }
 }
 

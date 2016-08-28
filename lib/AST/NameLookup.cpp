@@ -327,23 +327,34 @@ bool swift::removeShadowedDecls(SmallVectorImpl<ValueDecl*> &decls,
   return anyRemoved;
 }
 
-static bool matchesDiscriminator(Identifier discriminator,
-                                 const ValueDecl *value) {
+namespace {
+enum class DiscriminatorMatch {
+  NoDiscriminator,
+  Matches,
+  Different
+};
+}
+
+static DiscriminatorMatch matchDiscriminator(Identifier discriminator,
+                                             const ValueDecl *value) {
   if (value->getFormalAccess() > Accessibility::FilePrivate)
-    return false;
+    return DiscriminatorMatch::NoDiscriminator;
 
   auto containingFile =
     dyn_cast<FileUnit>(value->getDeclContext()->getModuleScopeContext());
   if (!containingFile)
-    return false;
+    return DiscriminatorMatch::Different;
 
-  return
-    discriminator == containingFile->getDiscriminatorForPrivateValue(value);
+  if (discriminator == containingFile->getDiscriminatorForPrivateValue(value))
+    return DiscriminatorMatch::Matches;
+
+  return DiscriminatorMatch::Different;
 }
 
-static bool matchesDiscriminator(Identifier discriminator,
-                                 UnqualifiedLookupResult lookupResult) {
-  return matchesDiscriminator(discriminator, lookupResult.getValueDecl());
+static DiscriminatorMatch
+matchDiscriminator(Identifier discriminator,
+                   UnqualifiedLookupResult lookupResult) {
+  return matchDiscriminator(discriminator, lookupResult.getValueDecl());
 }
 
 template <typename Result>
@@ -353,19 +364,21 @@ static void filterForDiscriminator(SmallVectorImpl<Result> &results,
   if (discriminator.empty())
     return;
 
-  auto doesNotMatch = [discriminator](Result next) -> bool {
-    return !matchesDiscriminator(discriminator, next);
-  };
-
-  auto lastMatchIter = std::find_if_not(results.rbegin(), results.rend(),
-                                        doesNotMatch);
+  auto lastMatchIter = std::find_if(results.rbegin(), results.rend(),
+                                    [discriminator](Result next) -> bool {
+    return
+      matchDiscriminator(discriminator, next) == DiscriminatorMatch::Matches;
+  });
   if (lastMatchIter == results.rend())
     return;
 
   Result lastMatch = *lastMatchIter;
 
   auto newEnd = std::remove_if(results.begin(), lastMatchIter.base()-1,
-                               doesNotMatch);
+                               [discriminator](Result next) -> bool {
+    return
+      matchDiscriminator(discriminator, next) == DiscriminatorMatch::Different;
+  });
   results.erase(newEnd, results.end());
   results.push_back(lastMatch);
 }
@@ -556,15 +569,8 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
 
         SmallVector<ValueDecl *, 4> Lookup;
         DC->lookupQualified(ExtendedType, Name, options, TypeResolver, Lookup);
-        bool isMetatypeType = ExtendedType->is<AnyMetatypeType>();
         bool FoundAny = false;
         for (auto Result : Lookup) {
-          // If we're looking into an instance, skip static functions.
-          if (!isMetatypeType &&
-              isa<FuncDecl>(Result) &&
-              cast<FuncDecl>(Result)->isStatic())
-            continue;
-
           // Classify this declaration.
           FoundAny = true;
 
@@ -574,12 +580,6 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
               Results.push_back(UnqualifiedLookupResult(Result));
             else
               Results.push_back(UnqualifiedLookupResult(MetaBaseDecl, Result));
-            continue;
-          } else if (auto FD = dyn_cast<FuncDecl>(Result)) {
-            if (FD->isStatic() && !isMetatypeType)
-              continue;
-          } else if (isa<EnumElementDecl>(Result)) {
-            Results.push_back(UnqualifiedLookupResult(BaseDecl, Result));
             continue;
           }
 
@@ -1039,9 +1039,7 @@ static bool checkAccessibility(const DeclContext *useDC,
   assert(sourceDC && "ValueDecl being accessed must have a valid DeclContext");
   switch (access) {
   case Accessibility::Private:
-    if (sourceDC->getASTContext().LangOpts.EnableSwift3Private)
-      return useDC == sourceDC || useDC->isChildContextOf(sourceDC);
-    SWIFT_FALLTHROUGH;
+    return useDC == sourceDC || useDC->isChildContextOf(sourceDC);
   case Accessibility::FilePrivate:
     return useDC->getModuleScopeContext() == sourceDC->getModuleScopeContext();
   case Accessibility::Internal: {

@@ -1948,10 +1948,13 @@ private:
   /// the exact expression kind).
   bool diagnoseGeneralMemberFailure(Constraint *constraint);
   
-  /// Diagnose the lookup of an enum element as instance member where only a
-  /// static member is allowed
-  void diagnoseEnumInstanceMemberLookup(EnumElementDecl *enumElementDecl,
-                                        SourceLoc loc);
+  /// Diagnose the lookup of a static member or enum element as instance member.
+  void diagnoseTypeMemberOnInstanceLookup(Type baseObjTy,
+                                          Expr *baseExpr,
+                                          DeclName memberName,
+                                          DeclNameLoc nameLoc,
+                                          ValueDecl *member,
+                                          SourceLoc loc);
 
   /// Given a result of name lookup that had no viable results, diagnose the
   /// unviable ones.
@@ -1979,6 +1982,7 @@ private:
 
   bool visitExpr(Expr *E);
   bool visitIdentityExpr(IdentityExpr *E);
+  bool visitTryExpr(TryExpr *E);
   bool visitTupleExpr(TupleExpr *E);
   
   bool visitUnresolvedMemberExpr(UnresolvedMemberExpr *E);
@@ -2338,12 +2342,68 @@ bool FailureDiagnosis::diagnoseGeneralMemberFailure(Constraint *constraint) {
 }
 
 void FailureDiagnosis::
-diagnoseEnumInstanceMemberLookup(EnumElementDecl *enumElementDecl,
-                                 SourceLoc loc) {
-  auto diag = diagnose(loc, diag::could_not_use_enum_element_on_instance,
-                       enumElementDecl->getName());
-  auto parentEnum = enumElementDecl->getParentEnum();
-  auto enumMetatype = parentEnum->getType()->castTo<AnyMetatypeType>();
+diagnoseTypeMemberOnInstanceLookup(Type baseObjTy,
+                                   Expr *baseExpr,
+                                   DeclName memberName,
+                                   DeclNameLoc nameLoc,
+                                   ValueDecl *member,
+                                   SourceLoc loc) {
+  SourceRange baseRange = baseExpr ? baseExpr->getSourceRange() : SourceRange();
+
+  Optional<InFlightDiagnostic> Diag;
+
+  // If the base of the lookup is a protocol metatype, suggest
+  // to replace the metatype with 'Self'
+  // error saying the lookup cannot be on a protocol metatype
+  if (auto metatypeTy = baseObjTy->getAs<MetatypeType>()) {
+    assert(metatypeTy->getInstanceType()->isExistentialType());
+
+    // Give a customized message if we're accessing a member type
+    // of a protocol -- otherwise a diagnostic talking about
+    // static members doesn't make a whole lot of sense
+    if (isa<TypeAliasDecl>(member)) {
+      Diag.emplace(diagnose(loc,
+                            diag::typealias_outside_of_protocol,
+                            memberName.getBaseName()));
+    } else if (isa<AssociatedTypeDecl>(member)) {
+      Diag.emplace(diagnose(loc,
+                            diag::assoc_type_outside_of_protocol,
+                            memberName.getBaseName()));
+    } else {
+      Diag.emplace(diagnose(loc,
+                            diag::could_not_use_type_member_on_protocol_metatype,
+                            baseObjTy, memberName));
+    }
+
+    Diag->highlight(baseRange).highlight(nameLoc.getSourceRange());
+
+    // See through function decl context
+    if (auto parent = CS->DC->getInnermostTypeContext()) {
+      // If we are in a protocol extension of 'Proto' and we see
+      // 'Proto.static', suggest 'Self.static'
+      if (auto extensionContext = parent->getAsProtocolExtensionContext()) {
+        if (extensionContext->getDeclaredType()->getCanonicalType()
+            == metatypeTy->getInstanceType()->getCanonicalType()) {
+          Diag->fixItReplace(baseRange, "Self");
+        }
+      }
+    }
+
+    return;
+  }
+
+  if (isa<EnumElementDecl>(member))
+    Diag.emplace(diagnose(loc, diag::could_not_use_enum_element_on_instance,
+                          memberName));
+  else
+    Diag.emplace(diagnose(loc, diag::could_not_use_type_member_on_instance,
+                          baseObjTy, memberName));
+
+  Diag->highlight(nameLoc.getSourceRange());
+
+  // No fix-it if the lookup was qualified
+  if (baseExpr && !baseExpr->isImplicit())
+    return;
 
   // Determine the contextual type of the expression
   Type contextualType;
@@ -2355,8 +2415,8 @@ diagnoseEnumInstanceMemberLookup(EnumElementDecl *enumElementDecl,
 
   // Try to provide a fix-it that only contains a '.'
   if (contextualType) {
-    if (enumMetatype->getInstanceType()->isEqual(contextualType)) {
-      diag.fixItInsert(loc, ".");
+    if (baseObjTy->isEqual(contextualType)) {
+      Diag->fixItInsert(loc, ".");
       return;
     }
   }
@@ -2382,8 +2442,8 @@ diagnoseEnumInstanceMemberLookup(EnumElementDecl *enumElementDecl,
           // If the rhs of '~=' is the enum type, a single dot suffixes
           // since the type can be inferred
           Type secondArgType = binaryExpr->getArg()->getElement(1)->getType();
-          if (secondArgType->isEqual(enumMetatype->getInstanceType())) {
-            diag.fixItInsert(loc, ".");
+          if (secondArgType->isEqual(baseObjTy)) {
+            Diag->fixItInsert(loc, ".");
             return;
           }
         }
@@ -2392,15 +2452,44 @@ diagnoseEnumInstanceMemberLookup(EnumElementDecl *enumElementDecl,
   }
 
   // Fall back to a fix-it with a full type qualifier
-  SmallString<32> enumTypeName;
-  llvm::raw_svector_ostream typeNameStream(enumTypeName);
-  typeNameStream << parentEnum->getName();
-  typeNameStream << ".";
+  auto nominal =
+      member->getDeclContext()
+      ->getAsNominalTypeOrNominalTypeExtensionContext();
+  SmallString<32> typeName;
+  llvm::raw_svector_ostream typeNameStream(typeName);
+  typeNameStream << nominal->getName() << ".";
 
-  diag.fixItInsert(loc, typeNameStream.str());
+  Diag->fixItInsert(loc, typeNameStream.str());
   return;
 }
 
+/// When a user refers a enum case with a wrong member name, we try to find a enum
+/// element whose name differs from the wrong name only in convention; meaning their
+/// lower case counterparts are identical.
+///   - DeclName is valid when such a correct case is found; invalid otherwise.
+static DeclName
+findCorrectEnumCaseName(MetatypeType *MetaTy, LookupResult &Result,
+                        DeclName memberName) {
+  if (!memberName.isSimpleName())
+    return DeclName();
+  if (!MetaTy->getInstanceType()->is<EnumType>() &&
+      !MetaTy->getInstanceType()->is<BoundGenericEnumType>())
+    return DeclName();
+  llvm::SmallVector<DeclName, 4> candidates;
+  for (auto &correction : Result) {
+    DeclName correctName = correction.Decl->getFullName();
+    if (!correctName.isSimpleName())
+      continue;
+    if (!isa<EnumElementDecl>(correction.Decl))
+      continue;
+    if (correctName.getBaseName().str().
+          equals_lower(memberName.getBaseName().str()))
+      candidates.push_back(correctName);
+  }
+  if (candidates.size() == 1)
+    return candidates.front();
+  return DeclName();
+}
 
 /// Given a result of name lookup that had no viable results, diagnose the
 /// unviable ones.
@@ -2426,10 +2515,17 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
       diagnose(loc, diag::type_not_subscriptable, baseObjTy)
         .highlight(baseRange);
     } else if (auto MTT = baseObjTy->getAs<MetatypeType>()) {
+      tryTypoCorrection();
+      if (DeclName rightName = findCorrectEnumCaseName(MTT, correctionResults,
+                                                       memberName)) {
+        diagnose(loc, diag::could_not_find_enum_case, MTT->getInstanceType(),
+          memberName, rightName).fixItReplace(nameLoc.getBaseNameLoc(),
+                                              rightName.getBaseName().str());
+        return;
+      }
       diagnose(loc, diag::could_not_find_type_member,
                MTT->getInstanceType(), memberName)
         .highlight(baseRange).highlight(nameLoc.getSourceRange());
-      tryTypoCorrection();
     } else {
       diagnose(loc, diag::could_not_find_value_member,
                baseObjTy, memberName)
@@ -2443,6 +2539,11 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
           diagnose(loc, diag::did_you_mean_raw_type);
           return; // Always prefer this over typo corrections.
         }
+      } else if (baseObjTy->isAny()) {
+        diagnose(loc, diag::any_as_anyobject_fixit)
+          .fixItInsert(baseExpr->getStartLoc(), "(")
+          .fixItInsertAfter(baseExpr->getEndLoc(), " as AnyObject)");
+        return;
       }
     }
 
@@ -2461,8 +2562,12 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
   // because there is exactly one candidate!) diagnose this.
   bool sameProblem = true;
   auto firstProblem = result.UnviableCandidates[0].second;
-  for (auto cand : result.UnviableCandidates)
+  ValueDecl *member = nullptr;
+  for (auto cand : result.UnviableCandidates) {
+    if (member == nullptr)
+      member = cand.first;
     sameProblem &= cand.second == firstProblem;
+  }
   
   auto instanceTy = baseObjTy;
   if (auto *MTT = instanceTy->getAs<AnyMetatypeType>())
@@ -2527,48 +2632,11 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
                instanceTy, memberName)
         .highlight(baseRange).highlight(nameLoc.getSourceRange());
       return;
-            
+
     case MemberLookupResult::UR_TypeMemberOnInstance:
-      if (instanceTy->isExistentialType() && baseObjTy->is<AnyMetatypeType>()) {
-        // If the base of the lookup is an existential metatype, emit an
-        // error saying the lookup cannot be on a protocol metatype
-        auto Diag = diagnose(loc, diag::could_not_use_type_member_on_existential,
-                             baseObjTy, memberName);
-        Diag.highlight(baseRange).highlight(nameLoc.getSourceRange());
-
-        // See through function decl context
-        if (auto parent = CS->DC->getParent())
-        // If we are in a protocol extension of 'Proto' and we see
-        // 'Proto.static', suggest 'Self.static'
-        if (auto extensionContext = parent->getAsProtocolExtensionContext()) {
-          if (extensionContext->getDeclaredType()->getCanonicalType()
-              == instanceTy->getCanonicalType()) {
-            Diag.fixItReplace(baseRange, "Self");
-          }
-        }
-
-      } else {
-        // Otherwise the static member lookup was invalid because it was
-        // called on an instance
-        
-        // Handle enum element lookup on instance type
-        auto lookThroughBaseObjTy = baseObjTy->lookThroughAllAnyOptionalTypes();
-        if (lookThroughBaseObjTy->is<EnumType>()
-            || lookThroughBaseObjTy->is<BoundGenericEnumType>()) {
-          for (auto cand : result.UnviableCandidates) {
-            ValueDecl *decl = cand.first;
-            if (auto enumElementDecl = dyn_cast<EnumElementDecl>(decl)) {
-              diagnoseEnumInstanceMemberLookup(enumElementDecl, loc);
-              return;
-            }
-          }
-        }
-        
-        // Provide diagnostic other static member lookups on instance type
-        diagnose(loc, diag::could_not_use_type_member_on_instance,
-                 baseObjTy, memberName)
-          .highlight(baseRange).highlight(nameLoc.getSourceRange());
-      }
+      diagnoseTypeMemberOnInstanceLookup(baseObjTy, baseExpr,
+                                         memberName, nameLoc,
+                                         member, loc);
       return;
         
     case MemberLookupResult::UR_MutatingMemberOnRValue:
@@ -2587,6 +2655,7 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
         
     case MemberLookupResult::UR_Inaccessible: {
       auto decl = result.UnviableCandidates[0].first;
+      // FIXME: What if the unviable candidates have different levels of access?
       diagnose(nameLoc, diag::candidate_inaccessible, decl->getName(),
                decl->getFormalAccess());
       for (auto cand : result.UnviableCandidates)
@@ -2860,6 +2929,27 @@ bool FailureDiagnosis::diagnoseGeneralConversionFailure(Constraint *constraint){
     }
     return true;
   }
+
+  // Due to migration reasons, types used to conform to BooleanType, which
+  // contain a member var 'boolValue', now does not convert to Bool. This block
+  // tries to add a specific diagnosis/fixit to explicitly invoke 'boolValue'.
+  if (toType->isBool()) {
+    auto LookupResult = CS->TC.lookupMember(CS->DC, fromType,
+      DeclName(CS->TC.Context.getIdentifier("boolValue")));
+    if (!LookupResult.empty()) {
+      if (isa<VarDecl>(LookupResult.begin()->Decl)) {
+        if (anchor->canAppendCallParentheses())
+          diagnose(anchor->getLoc(), diag::types_not_convertible_use_bool_value,
+                   fromType, toType).fixItInsertAfter(anchor->getEndLoc(),
+                                                      ".boolValue");
+        else
+          diagnose(anchor->getLoc(), diag::types_not_convertible_use_bool_value,
+            fromType, toType).fixItInsert(anchor->getStartLoc(), "(").
+              fixItInsertAfter(anchor->getEndLoc(), ").boolValue");
+        return true;
+      }
+    }
+  }
   
   diagnose(anchor->getLoc(), diag::types_not_convertible,
            constraint->getKind() == ConstraintKind::Subtype,
@@ -3081,6 +3171,17 @@ static void eraseOpenedExistentials(Expr *&expr) {
         assert(value != OpenExistentials.end() &&
                "didn't see this OVE in a containing OpenExistentialExpr?");
         return { true, value->second };
+      }
+
+      // Handle collection upcasts specially so that we don't blow up on
+      // their embedded OVEs.
+      if (auto CDE = dyn_cast<CollectionUpcastConversionExpr>(expr)) {
+        if (auto result = CDE->getSubExpr()->walk(*this)) {
+          CDE->setSubExpr(result);
+          return { false, CDE };
+        } else {
+          return { true, CDE };
+        }
       }
       
       return { true, expr };
@@ -3579,15 +3680,21 @@ static bool tryIntegerCastFixIts(InFlightDiagnostic &diag,
 static bool
 addTypeCoerceFixit(InFlightDiagnostic &diag, ConstraintSystem *CS,
                    Type fromType, Type toType, Expr *expr) {
-  if (CS->getTypeChecker().typeCheckCheckedCast(fromType, toType, CS->DC,
-      SourceLoc(), SourceRange(), SourceRange(), [](Type T) { return false; },
-      true) != CheckedCastKind::Unresolved) {
+  CheckedCastKind Kind =
+    CS->getTypeChecker().typeCheckCheckedCast(fromType, toType, CS->DC,
+                                              SourceLoc(), SourceRange(),
+                                              SourceRange(),
+                                              [](Type T) { return false; },
+                                              /*suppressDiagnostics*/ true);
+  if (Kind != CheckedCastKind::Unresolved) {
     SmallString<32> buffer;
     llvm::raw_svector_ostream OS(buffer);
     toType->print(OS);
     diag.fixItInsert(Lexer::getLocForEndOfToken(CS->DC->getASTContext().SourceMgr,
                                                 expr->getEndLoc()),
-                     (llvm::Twine(" as! ") + OS.str()).str());
+                     (llvm::Twine(Kind == CheckedCastKind::Coercion ? " as " :
+                                                                      " as! ") +
+                      OS.str()).str());
     return true;
   }
   return false;
@@ -3604,17 +3711,17 @@ static bool tryDiagnoseNonEscapingParameterToEscaping(Expr *expr, Type srcType,
   // Need to be referencing a parameter of function type
   auto declRef = dyn_cast<DeclRefExpr>(expr);
   if (!declRef || !isa<ParamDecl>(declRef->getDecl()) ||
-      !declRef->getType()->is<FunctionType>())
+      !declRef->getType()->is<AnyFunctionType>())
     return false;
 
-  // Must be from non-escaping function to escaping function
-  auto srcFT = srcType->getAs<FunctionType>();
-  auto destFT = dstType->getAs<FunctionType>();
-  if (!srcFT || !destFT || !srcFT->isNoEscape() || destFT->isNoEscape())
-    return false;
+  // Must be from non-escaping function to escaping function. For the
+  // destination type, we read through optionality to give better diagnostics in
+  // the event of an implicit promotion.
+  auto srcFT = srcType->getAs<AnyFunctionType>();
+  auto dstFT =
+      dstType->lookThroughAllAnyOptionalTypes()->getAs<AnyFunctionType>();
 
-  // Function types must be equivalent modulo @escaping, @convention, etc.
-  if (!destFT->isEqual(srcFT->withExtInfo(destFT->getExtInfo())))
+  if (!srcFT || !dstFT || !srcFT->isNoEscape() || dstFT->isNoEscape())
     return false;
 
   // Pick a specific diagnostic for the specific use
@@ -3954,6 +4061,9 @@ bool FailureDiagnosis::diagnoseContextualConversionError() {
   case CTP_ArrayElement:
   case CTP_DictionaryKey:
   case CTP_DictionaryValue:
+  case CTP_AssignSource:
+  case CTP_Initialization:
+  case CTP_ReturnStmt:
     tryRawRepresentableFixIts(diag, CS, exprType, contextualType,
                               KnownProtocolKind::ExpressibleByIntegerLiteral,
                               expr) ||
@@ -4666,6 +4776,12 @@ bool FailureDiagnosis::visitSubscriptExpr(SubscriptExpr *SE) {
   if (!baseExpr) return true;
   auto baseType = baseExpr->getType();
   
+  if (isa<NilLiteralExpr>(baseExpr)) {
+    diagnose(baseExpr->getLoc(), diag::cannot_subscript_nil_literal)
+      .highlight(baseExpr->getSourceRange());
+    return true;
+  }
+
   auto locator =
     CS->getConstraintLocator(SE, ConstraintLocator::SubscriptMember);
 
@@ -4913,26 +5029,41 @@ bool FailureDiagnosis::diagnoseNilLiteralComparison(
   return true;
 }
 
-/// When initializing UnsafeMutablePointer from a given UnsafePointer, we need
-/// to insert "mutating:" label before the argument to ensure the correct
-/// intializer gets called. This function checks if we need to add the label.
-static bool shouldAddMutating(ASTContext &Ctx, const Expr *Fn,
-                              const Expr* Arg) {
+/// When initializing Unsafe[Mutable]Pointer<T> from Unsafe[Mutable]RawPointer,
+/// issue a diagnostic that refers to the API for binding memory to a type.
+static bool isCastToTypedPointer(ASTContext &Ctx, const Expr *Fn,
+                                 const Expr* Arg) {
   auto *TypeExp = dyn_cast<TypeExpr>(Fn);
   auto *ParenExp = dyn_cast<ParenExpr>(Arg);
   if (!TypeExp || !ParenExp)
     return false;
+
   auto InitType = TypeExp->getInstanceType();
   auto ArgType = ParenExp->getSubExpr()->getType();
   if (InitType.isNull() || ArgType.isNull())
     return false;
-  if (auto *InitNom = InitType->getAnyNominal()) {
-    if (auto *ArgNom = ArgType->getAnyNominal()) {
-      return InitNom == Ctx.getUnsafeMutablePointerDecl() &&
-        ArgNom == Ctx.getUnsafePointerDecl();
-    }
+
+  // unwrap one level of Optional
+  if (auto ArgOptType = ArgType->getOptionalObjectType())
+    ArgType = ArgOptType;
+
+  auto *InitNom = InitType->getAnyNominal();
+  if (!InitNom)
+    return false;
+
+  if (InitNom != Ctx.getUnsafeMutablePointerDecl()
+      && InitNom != Ctx.getUnsafePointerDecl()) {
+    return false;
   }
-  return false;
+  auto *ArgNom = ArgType->getAnyNominal();
+  if (!ArgNom)
+    return false;
+
+  if (ArgNom != Ctx.getUnsafeMutableRawPointerDecl()
+      && ArgNom != Ctx.getUnsafeRawPointerDecl()) {
+    return false;
+  }
+  return true;
 }
 
 bool FailureDiagnosis::visitApplyExpr(ApplyExpr *callExpr) {
@@ -5250,10 +5381,9 @@ bool FailureDiagnosis::visitApplyExpr(ApplyExpr *callExpr) {
              overloadName, argString, isInitializer);
   }
 
-
-  if (shouldAddMutating(CS->DC->getASTContext(), fnExpr, argExpr)) {
-    diagnose(fnExpr->getLoc(), diag::pointer_init_add_mutating).fixItInsert(
-      cast<ParenExpr>(argExpr)->getSubExpr()->getStartLoc(), "mutating: ");
+  if (isCastToTypedPointer(CS->DC->getASTContext(), fnExpr, argExpr)) {
+    diagnose(fnExpr->getLoc(), diag::pointer_init_to_type)
+      .highlight(argExpr->getSourceRange());
   }
   
   // Did the user intend on invoking a different overload?
@@ -5524,11 +5654,11 @@ bool FailureDiagnosis::visitClosureExpr(ClosureExpr *CE) {
       // don't confuse the issue.
       fnType = FunctionType::get(fnType->getInput(), fnType->getResult());
       diagnose(params->getStartLoc(), diag::closure_argument_list_tuple,
-               fnType, inferredArgCount, actualArgCount);
+               fnType, inferredArgCount, actualArgCount, (actualArgCount == 1));
       return true;
     }
 
-    if (CS->TC.coerceParameterListToType(params, CE, inferredArgType))
+    if (CS->TC.coerceParameterListToType(params, CE, fnType))
       return true;
 
     expectedResultType = fnType->getResult();
@@ -6152,6 +6282,12 @@ bool FailureDiagnosis::visitIdentityExpr(IdentityExpr *E) {
   return false;
 }
 
+/// A TryExpr doesn't change it's argument, nor does it change the contextual
+/// type.
+bool FailureDiagnosis::visitTryExpr(TryExpr *E) {
+  return visit(E->getSubExpr());
+}
+
 bool FailureDiagnosis::visitExpr(Expr *E) {
   // Check each of our immediate children to see if any of them are
   // independently invalid.
@@ -6206,7 +6342,7 @@ void ConstraintSystem::diagnoseFailureForExpr(Expr *expr) {
   // inconsistent state.
   simplify(/*ContinueAfterFailures*/true);
 
-  // Look through RebindSelfInConstructorExpr to avoid weird sema issues.
+  // Look through RebindSelfInConstructorExpr to avoid weird Sema issues.
   if (auto *RB = dyn_cast<RebindSelfInConstructorExpr>(expr))
     expr = RB->getSubExpr();
   

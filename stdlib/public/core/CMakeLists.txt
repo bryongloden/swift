@@ -44,6 +44,7 @@ set(SWIFTLIB_ESSENTIAL
   CString.swift
   CTypes.swift
   DebuggerSupport.swift
+  DropWhile.swift.gyb
   EmptyCollection.swift
   Equatable.swift
   ErrorType.swift
@@ -88,6 +89,7 @@ set(SWIFTLIB_ESSENTIAL
   OutputStream.swift
   Pointer.swift
   Policy.swift
+  PrefixWhile.swift.gyb
   Print.swift
   RandomAccessCollection.swift
   Range.swift.gyb
@@ -174,7 +176,7 @@ else()
       ${ICU_UC_LIBRARY} ${ICU_I18N_LIBRARY})
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "CYGWIN")
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "CYGWIN")
   execute_process(COMMAND "cygpath" "-u" "$ENV{SYSTEMROOT}"
       OUTPUT_VARIABLE ENV_SYSTEMROOT)
 

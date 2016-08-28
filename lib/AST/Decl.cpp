@@ -536,29 +536,38 @@ void GenericParamList::addTrailingWhereClause(
   Requirements = newRequirements;
 }
 
-ArrayRef<Substitution>
-GenericParamList::getForwardingSubstitutions(ASTContext &C) {
-  SmallVector<Substitution, 4> subs;
-
-  // TODO: IRGen wants substitutions for secondary archetypes.
-  // for (auto &param : params->getNestedGenericParams()) {
-  //  ArchetypeType *archetype = param.getAsTypeParam()->getArchetype();
-
-  for (auto archetype : getAllNestedArchetypes()) {
-    // "Check conformance" on each declared protocol to build a
-    // conformance map.
-    SmallVector<ProtocolConformanceRef, 2> conformances;
-
-    for (ProtocolDecl *proto : archetype->getConformsTo()) {
-      conformances.push_back(ProtocolConformanceRef(proto));
-    }
-
-    // Build an identity mapping with the derived conformances.
-    auto replacement = SubstitutedType::get(archetype, archetype, C);
-    subs.push_back({replacement, C.AllocateCopy(conformances)});
+void GenericParamList::
+getForwardingSubstitutionMap(TypeSubstitutionMap &result) const {
+  // Add forwarding substitutions from the outer context if we have
+  // a type nested inside a generic function.
+  for (auto *params = this;
+       params != nullptr;
+       params = params->getOuterParameters()) {
+    for (auto *param : params->getParams())
+      result[param->getDeclaredType()->getCanonicalType().getPointer()]
+          = param->getArchetype();
   }
+}
 
-  return C.AllocateCopy(subs);
+ArrayRef<Substitution>
+GenericParamList::getForwardingSubstitutions(GenericSignature *sig) const {
+  // This is stupid. We don't really need a module, because we
+  // should not be looking up concrete conformances when we
+  // substitute types here.
+  auto *mod = getParams()[0]->getDeclContext()->getParentModule();
+
+  TypeSubstitutionMap subs;
+  getForwardingSubstitutionMap(subs);
+
+  auto lookupConformanceFn =
+      [&](Type replacement, ProtocolType *protoType)
+          -> ProtocolConformanceRef {
+    return ProtocolConformanceRef(protoType->getDecl());
+  };
+
+  SmallVector<Substitution, 4> result;
+  sig->getSubstitutions(*mod, subs, lookupConformanceFn, result);
+  return sig->getASTContext().AllocateCopy(result);
 }
 
 /// \brief Add the nested archetypes of the given archetype to the set
@@ -1896,16 +1905,13 @@ const DeclContext *
 ValueDecl::getFormalAccessScope(const DeclContext *useDC) const {
   const DeclContext *result = getDeclContext();
   Accessibility access = getFormalAccess(useDC);
-  bool swift3PrivateChecked = false;
 
   while (!result->isModuleScopeContext()) {
     if (result->isLocalContext())
       return result;
 
-    if (access == Accessibility::Private && !swift3PrivateChecked) {
-      if (result->getASTContext().LangOpts.EnableSwift3Private)
-        return result;
-      swift3PrivateChecked = true;
+    if (access == Accessibility::Private) {
+      return result;
     }
 
     if (auto enclosingNominal = dyn_cast<NominalTypeDecl>(result)) {
@@ -2019,14 +2025,10 @@ bool NominalTypeDecl::derivesProtocolConformance(ProtocolDecl *protocol) const {
   if (!knownProtocol)
     return false;
 
-  // All nominal types can derive their Error conformance.
-  if (*knownProtocol == KnownProtocolKind::Error)
-    return true;
-
   if (auto *enumDecl = dyn_cast<EnumDecl>(this)) {
     switch (*knownProtocol) {
-    // Enums with raw types can implicitly derive their RawRepresentable
-    // conformance.
+    // The presence of a raw type is an explicit declaration that
+    // the compiler should derive a RawRepresentable conformance.
     case KnownProtocolKind::RawRepresentable:
       return enumDecl->hasRawType();
     
@@ -3729,10 +3731,10 @@ ParamDecl::ParamDecl(ParamDecl *PD)
     ArgumentName(PD->getArgumentName()),
     ArgumentNameLoc(PD->getArgumentNameLoc()),
     LetVarInOutLoc(PD->getLetVarInOutLoc()),
-    typeLoc(PD->getTypeLoc()),
     DefaultValueAndIsVariadic(PD->DefaultValueAndIsVariadic),
     IsTypeLocImplicit(PD->IsTypeLocImplicit),
     defaultArgumentKind(PD->defaultArgumentKind) {
+  typeLoc = PD->getTypeLoc();
 }
 
 
@@ -3970,10 +3972,7 @@ ObjCSubscriptKind SubscriptDecl::getObjCSubscriptKind(
   if (Type objectTy = indexTy->getAnyOptionalObjectType())
     indexTy = objectTy;
 
-  if (getASTContext().getBridgedToObjC(getDeclContext(), indexTy, resolver))
-    return ObjCSubscriptKind::Keyed;
-
-  return ObjCSubscriptKind::None;
+  return ObjCSubscriptKind::Keyed;
 }
 
 SourceRange SubscriptDecl::getSourceRange() const {
@@ -4935,17 +4934,14 @@ Type TypeBase::getSwiftNewtypeUnderlyingType() {
     return {};
 
   // Make sure the clang node has swift_newtype attribute
-  if (!structDecl->getClangNode())
-    return {};
-  auto clangNode = structDecl->getClangNode();
-  if (!clangNode.getAsDecl() ||
-      !clangNode.castAsDecl()->getAttr<clang::SwiftNewtypeAttr>())
+  auto clangNode = structDecl->getClangDecl();
+  if (!clangNode || !clangNode->hasAttr<clang::SwiftNewtypeAttr>())
     return {};
 
   // Underlying type is the type of rawValue
   for (auto member : structDecl->getMembers())
     if (auto varDecl = dyn_cast<VarDecl>(member))
-      if (varDecl->getName().str() == "rawValue")
+      if (varDecl->getName() == getASTContext().Id_rawValue)
         return varDecl->getType();
 
   return {};

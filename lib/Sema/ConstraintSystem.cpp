@@ -709,12 +709,20 @@ bool ConstraintSystem::isSetType(Type type) {
   return false;
 }
 
+bool ConstraintSystem::isAnyHashableType(Type type) {
+  if (auto st = type->getAs<StructType>()) {
+    return st->getDecl() == TC.Context.getAnyHashableDecl();
+  }
+
+  return false;
+}
+
 Type ConstraintSystem::openBindingType(Type type, 
                                        ConstraintLocatorBuilder locator) {
   Type result = openType(type, locator);
   
   if (isArrayType(type)) {
-    auto boundStruct = cast<BoundGenericStructType>(type.getPointer());
+    auto boundStruct = type->getAs<BoundGenericStructType>();
     if (auto replacement = getTypeChecker().getArraySliceType(
                              SourceLoc(), boundStruct->getGenericArgs()[0])) {
       return replacement;
@@ -1187,6 +1195,16 @@ ConstraintSystem::getTypeOfMemberReference(
   if (baseObjTy->is<ModuleType>()) {
     return getTypeOfReference(value, isTypeReference, /*isSpecialized=*/false,
                               functionRefKind, locator, base);
+  }
+
+  // Don't open existentials when accessing typealias members of
+  // protocols.
+  if (auto *alias = dyn_cast<TypeAliasDecl>(value)) {
+    if (baseObjTy->isExistentialType()) {
+      auto memberTy = alias->getUnderlyingType();
+      auto openedType = FunctionType::get(baseObjTy, memberTy);
+      return { openedType, memberTy };
+    }
   }
 
   // Handle associated type lookup as a special case, horribly.
